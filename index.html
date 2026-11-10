@@ -3,12 +3,23 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#f5f6f1">
+    <meta name="theme-color" content="#f3f6f4">
+    <meta name="color-scheme" content="light dark">
     <meta name="description" content="Mapa interativo de acidentes de trânsito em Minas Gerais com dados públicos da PRF e da SEJUSP.">
     <title>Minas em Alerta — Acidentes nas rodovias</title>
+    <script>
+      (function () {
+        var theme = null;
+        try { theme = localStorage.getItem("mea-theme"); } catch (error) {}
+        if (theme !== "light" && theme !== "dark") {
+          theme = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        }
+        document.documentElement.setAttribute("data-theme", theme);
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
     <script src="app.js" defer></script>
   </head>
@@ -18,167 +29,201 @@
         <a class="brand" href="#" aria-label="Minas em Alerta, início">
           <span class="brand-mark" aria-hidden="true">
             <svg viewBox="0 0 32 32" fill="none">
-              <path d="M16 3 28 9.5v13L16 29 4 22.5v-13L16 3Z" stroke="currentColor" stroke-width="1.7"/>
-              <path d="m9 20 4.1-9 3.2 6 2.2-3.5L23 22" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M16 3 28 9.5v13L16 29 4 22.5v-13L16 3Z" stroke="currentColor" stroke-width="1.8"/>
+              <path d="m9 20 4.1-9 3.2 6 2.2-3.5L23 22" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
               <circle cx="13.1" cy="11" r="1.6" fill="currentColor"/>
             </svg>
           </span>
           <span class="brand-copy">
             <strong>minas<span>em</span>alerta</strong>
-            <small>OBSERVATÓRIO VIÁRIO</small>
+            <small>Observatório viário</small>
           </span>
         </a>
-        <div class="header-meta">
-          <span class="live-dot" aria-hidden="true"></span>
-          <span>PAINEL DE DADOS PÚBLICOS</span>
-          <span class="header-divider"></span>
-          <span>MINAS GERAIS</span>
+        <div class="topbar-actions">
+          <span class="header-chip"><span class="live-dot" aria-hidden="true"></span>Dados públicos · MG</span>
+          <a class="source-link" href="https://www.gov.br/prf/pt-br/acesso-a-informacao/dados-abertos/dados-abertos-da-prf" target="_blank" rel="noreferrer">
+            Sobre os dados <span aria-hidden="true">↗</span>
+          </a>
+          <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Alternar modo escuro" title="Alternar tema">
+            <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></svg>
+            <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.6 4.6l1.6 1.6M17.8 17.8l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.6 19.4l1.6-1.6M17.8 6.2l1.6-1.6"/></svg>
+          </button>
         </div>
-        <a class="source-link" href="https://www.gov.br/prf/pt-br/acesso-a-informacao/dados-abertos/dados-abertos-da-prf" target="_blank" rel="noreferrer">
-          Sobre os dados <span aria-hidden="true">↗</span>
-        </a>
       </header>
 
       <main>
         <section class="intro-row">
           <div>
-            <div class="eyebrow"><span class="eyebrow-line"></span> SEGURANÇA VIÁRIA · 2026</div>
-            <h1>Acidentes nas <em>rodovias</em><br class="mobile-break"> de Minas Gerais</h1>
-            <p class="intro-copy">Explore ocorrências, causas e horários. Clique em um ponto para ver os detalhes do registro.</p>
+            <div class="eyebrow"><span class="eyebrow-line"></span> Segurança viária · 2026</div>
+            <h1>Acidentes nas <em>rodovias federais</em> de Minas Gerais</h1>
+            <p class="intro-copy">Passe o mouse sobre uma BR para destacá-la e clique para ver somente os dados dela. Pontos próximos são agrupados: clique num grupo para aproximar e num ponto para ver o registro.</p>
           </div>
-          <div class="year-badge"><span>ANO EM FOCO</span><strong>2026</strong></div>
+          <div class="year-badge"><span>Ano em foco</span><strong>2026</strong></div>
         </section>
 
         <section class="metrics" aria-label="Resumo das ocorrências filtradas">
           <article class="metric-card">
-            <span class="metric-label">OCORRÊNCIAS</span>
-            <div class="metric-value" id="metric-occurrences">—</div>
-            <span class="metric-note">registros da PRF em MG</span>
+            <span class="metric-icon metric-icon-neutral" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 19h16M6 16V9m4 7V5m4 11v-5m4 5V8"/></svg>
+            </span>
+            <div>
+              <span class="metric-label">Ocorrências</span>
+              <div class="metric-value" id="metric-occurrences">—</div>
+              <span class="metric-note" id="metric-occurrences-note">registros da PRF em MG</span>
+            </div>
           </article>
           <article class="metric-card">
-            <span class="metric-label">VÍTIMAS FATAIS</span>
-            <div class="metric-value metric-danger" id="metric-fatalities">—</div>
-            <span class="metric-note">pessoas envolvidas</span>
+            <span class="metric-icon metric-icon-danger" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 3 2.5 20h19L12 3Z"/><path d="M12 10v4.5M12 17.2v.1"/></svg>
+            </span>
+            <div>
+              <span class="metric-label">Vítimas fatais</span>
+              <div class="metric-value metric-danger" id="metric-fatalities">—</div>
+              <span class="metric-note">pessoas mortas</span>
+            </div>
           </article>
           <article class="metric-card">
-            <span class="metric-label">FERIDOS</span>
-            <div class="metric-value metric-warn" id="metric-injured">—</div>
-            <span class="metric-note">leves e graves</span>
+            <span class="metric-icon metric-icon-warn" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M10 4h4v6h6v4h-6v6h-4v-6H4v-4h6V4Z"/></svg>
+            </span>
+            <div>
+              <span class="metric-label">Feridos</span>
+              <div class="metric-value metric-warn" id="metric-injured">—</div>
+              <span class="metric-note">leves e graves</span>
+            </div>
           </article>
-          <article class="metric-card metric-source">
-            <span class="metric-label">FONTES INTEGRADAS</span>
-            <div class="metric-value"><span id="source-count">0</span><span class="metric-total"> / 2</span></div>
-            <span class="metric-note">PRF · SEJUSP</span>
+          <article class="metric-card">
+            <span class="metric-icon metric-icon-accent" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="2.8"/><path d="M5 6v6c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8V6M5 12v6c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8v-6"/></svg>
+            </span>
+            <div>
+              <span class="metric-label">Fontes integradas</span>
+              <div class="metric-value"><span id="source-count">0</span><span class="metric-total"> / 2</span></div>
+              <span class="metric-note">PRF · SEJUSP</span>
+            </div>
           </article>
         </section>
 
         <section class="workspace">
           <aside class="sidebar" aria-label="Filtros e dados">
-            <div class="sidebar-heading">
-              <div>
-                <span class="section-kicker">EXPLORAR DADOS</span>
-                <h2>Filtros</h2>
+            <div class="side-tabs" role="tablist" aria-label="Seções da barra lateral">
+              <button type="button" class="side-tab" role="tab" id="tab-filters" aria-controls="pane-filters" aria-selected="true">
+                Filtros <span class="filter-count" id="filter-count" hidden>0</span>
+              </button>
+              <button type="button" class="side-tab" role="tab" id="tab-roads" aria-controls="pane-roads" aria-selected="false" tabindex="-1">Rodovias</button>
+              <button type="button" class="side-tab" role="tab" id="tab-state" aria-controls="pane-state" aria-selected="false" tabindex="-1">Estadual</button>
+            </div>
+
+            <section class="side-pane" id="pane-filters" role="tabpanel" aria-labelledby="tab-filters">
+              <div class="search-wrap">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.7" cy="8.7" r="5.6"/><path d="m13 13 4 4"/></svg>
+                <input id="search" type="search" placeholder="Buscar rodovia, cidade, causa ou km…" autocomplete="off" aria-label="Busca rápida">
               </div>
-              <button class="text-button" id="reset-filters" type="button">Limpar</button>
-            </div>
 
-            <label class="field-label" for="search">Busca rápida</label>
-            <div class="search-wrap">
-              <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.7" cy="8.7" r="5.6"/><path d="m13 13 4 4"/></svg>
-              <input id="search" type="search" placeholder="Rodovia, cidade ou causa…" autocomplete="off">
-            </div>
-
-            <div class="field-grid">
-              <div class="field">
-                <label class="field-label" for="road-filter">Rodovia federal</label>
+              <div class="filter-row">
+                <label class="filter-label" for="road-filter">Rodovia federal</label>
                 <select id="road-filter" disabled><option value="">Todas as BRs</option></select>
               </div>
-              <div class="field">
-                <label class="field-label" for="type-filter">Tipo de acidente</label>
+
+              <details class="filter-section" open>
+                <summary><span>Gravidade</span><em class="section-badge" data-badge="severity" hidden></em></summary>
+                <div class="chip-group" id="severity-chips" role="group" aria-label="Gravidade">
+                  <button type="button" class="chip" data-value="fatal" aria-pressed="false"><i class="chip-dot fatal-dot"></i>Fatais</button>
+                  <button type="button" class="chip" data-value="injury" aria-pressed="false"><i class="chip-dot injury-dot"></i>Com feridos</button>
+                  <button type="button" class="chip" data-value="no-injury" aria-pressed="false"><i class="chip-dot safe-dot"></i>Sem vítimas</button>
+                </div>
+              </details>
+
+              <details class="filter-section">
+                <summary><span>Horário</span><em class="section-badge" data-badge="period" hidden></em></summary>
+                <div class="chip-group chip-grid" id="period-chips" role="group" aria-label="Horário">
+                  <button type="button" class="chip chip-stacked" data-value="madrugada" aria-pressed="false"><b>Madrugada</b><small>00h–05h</small></button>
+                  <button type="button" class="chip chip-stacked" data-value="manha" aria-pressed="false"><b>Manhã</b><small>06h–11h</small></button>
+                  <button type="button" class="chip chip-stacked" data-value="tarde" aria-pressed="false"><b>Tarde</b><small>12h–17h</small></button>
+                  <button type="button" class="chip chip-stacked" data-value="noite" aria-pressed="false"><b>Noite</b><small>18h–23h</small></button>
+                </div>
+              </details>
+
+              <details class="filter-section">
+                <summary><span>Condição do tempo</span><em class="section-badge" data-badge="weather" hidden></em></summary>
+                <div class="chip-group" id="weather-chips" role="group" aria-label="Condição do tempo">
+                  <span class="empty-inline">Carregando…</span>
+                </div>
+              </details>
+
+              <details class="filter-section">
+                <summary><span>Tipo e causa</span><em class="section-badge" data-badge="type-cause" hidden></em></summary>
+                <label class="filter-label" for="type-filter">Tipo de acidente</label>
                 <select id="type-filter" disabled><option value="">Todos os tipos</option></select>
+                <label class="filter-label filter-label-spaced" for="cause-filter">Causa registrada</label>
+                <select id="cause-filter" disabled><option value="">Todas as causas</option></select>
+              </details>
+
+              <div class="side-actions">
+                <span class="small-muted">Botões permitem várias opções</span>
+                <button class="text-button" id="reset-filters" type="button">Limpar filtros</button>
               </div>
-            </div>
+            </section>
 
-            <div class="field field-wide">
-              <label class="field-label" for="cause-filter">Causa registrada</label>
-              <select id="cause-filter" disabled><option value="">Todas as causas</option></select>
-            </div>
-
-            <div class="field-grid">
-              <div class="field">
-                <label class="field-label" for="period-filter">Horário</label>
-                <select id="period-filter">
-                  <option value="">Qualquer horário</option>
-                  <option value="madrugada">Madrugada · 00–05h</option>
-                  <option value="manha">Manhã · 06–11h</option>
-                  <option value="tarde">Tarde · 12–17h</option>
-                  <option value="noite">Noite · 18–23h</option>
-                </select>
+            <section class="side-pane" id="pane-roads" role="tabpanel" aria-labelledby="tab-roads" hidden>
+              <div class="panel-title-row">
+                <h3>Ocorrências por BR</h3>
+                <span class="small-muted">clique para focar</span>
               </div>
-              <div class="field">
-                <label class="field-label" for="severity-filter">Gravidade</label>
-                <select id="severity-filter">
-                  <option value="">Todas</option>
-                  <option value="fatal">Com vítimas fatais</option>
-                  <option value="injury">Com feridos</option>
-                  <option value="no-injury">Sem feridos ou mortes</option>
-                </select>
+              <div class="road-ranking" id="road-ranking">
+                <p class="empty-inline">Carregando rodovias…</p>
               </div>
-            </div>
+            </section>
 
-            <div class="filter-divider"></div>
-            <div class="panel-title-row">
-              <h3>BRs com mais registros</h3>
-              <span class="small-muted">2026</span>
-            </div>
-            <div class="road-ranking" id="road-ranking">
-              <p class="empty-inline">Carregando rodovias…</p>
-            </div>
-
-            <div class="filter-divider"></div>
-            <div class="panel-title-row">
-              <h3>Dados estaduais</h3>
-              <span class="source-pill">SEJUSP</span>
-            </div>
-            <p class="state-data-note">A base estadual registra vítimas por município, sem identificar a rodovia ou a causa de cada ocorrência.</p>
-            <div class="state-summary" id="state-summary">
-              <span class="state-summary-number" id="state-victims">—</span>
-              <span class="state-summary-label">registros de vítimas · base 2026</span>
-            </div>
-            <p class="state-data-note" id="state-data-through">Dados estaduais incluídos na publicação do site.</p>
-            <div class="municipality-list" id="municipality-list">
-              <p class="empty-inline">Carregando resumo estadual…</p>
-            </div>
-
-            <div class="filter-divider"></div>
-            <div class="panel-title-row">
-              <h3>Fontes oficiais</h3>
-            </div>
-            <p class="source-update-note">Os dados são incluídos em cada publicação do site e podem não refletir as atualizações mais recentes das fontes.</p>
-            <div class="source-buttons">
-              <a href="https://www.gov.br/prf/pt-br/acesso-a-informacao/dados-abertos/dados-abertos-da-prf" target="_blank" rel="noreferrer">Fonte PRF <span aria-hidden="true">↗</span></a>
-              <a href="https://dados.mg.gov.br/dataset/sejusp_vitimas_acidentes_transito" target="_blank" rel="noreferrer">Fonte SEJUSP <span aria-hidden="true">↗</span></a>
-            </div>
+            <section class="side-pane" id="pane-state" role="tabpanel" aria-labelledby="tab-state" hidden>
+              <div class="panel-title-row">
+                <h3>Vítimas por município</h3>
+                <span class="source-pill">SEJUSP</span>
+              </div>
+              <p class="state-data-note">A base estadual registra vítimas por município, sem identificar a rodovia ou a causa de cada ocorrência.</p>
+              <div class="state-summary" id="state-summary">
+                <span class="state-summary-number" id="state-victims">—</span>
+                <span class="state-summary-label">registros de vítimas · base 2026</span>
+              </div>
+              <p class="state-data-note" id="state-data-through">Dados estaduais incluídos na publicação do site.</p>
+              <div class="municipality-list" id="municipality-list">
+                <p class="empty-inline">Carregando resumo estadual…</p>
+              </div>
+            </section>
           </aside>
 
           <section class="map-section" aria-label="Mapa de acidentes em Minas Gerais">
             <div class="map-topline">
               <div class="map-caption">
-                <span class="map-pin" aria-hidden="true">⌖</span>
-                <div><strong>Minas Gerais</strong><span id="map-caption">Mapa estadual · ocorrências geolocalizadas da PRF</span></div>
+                <span class="map-pin" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z"/><circle cx="12" cy="10" r="2.3"/></svg>
+                </span>
+                <div><strong id="map-title">Minas Gerais</strong><span id="map-caption">Mapa estadual · ocorrências geolocalizadas da PRF</span></div>
               </div>
-              <div class="map-controls">
-                <span class="map-count" id="map-count">0 ocorrências</span>
-                <button type="button" class="map-control" id="zoom-in" aria-label="Aproximar">+</button>
-                <button type="button" class="map-control" id="zoom-out" aria-label="Afastar">−</button>
-                <button type="button" class="map-control reset-map" id="zoom-reset" aria-label="Reiniciar zoom">↺</button>
-              </div>
+              <span class="map-count" id="map-count">0 ocorrências</span>
             </div>
+            <div class="map-stage" id="map-stage">
             <div class="map-canvas" id="map-canvas">
-              <svg id="map-svg" role="img" aria-label="Mapa vetorial de Minas Gerais com os municípios e as ocorrências carregadas">
+              <svg id="map-svg" role="img" aria-label="Mapa vetorial de Minas Gerais com municípios, rodovias federais e ocorrências">
                 <g id="municipalities"></g>
+                <g id="roads"></g>
               </svg>
               <canvas id="markers" aria-hidden="true"></canvas>
+              <div class="map-controls" role="group" aria-label="Controles do mapa">
+                <button type="button" class="map-control" id="zoom-in" aria-label="Aproximar" title="Aproximar">
+                  <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+                </button>
+                <button type="button" class="map-control" id="zoom-out" aria-label="Afastar" title="Afastar">
+                  <svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>
+                </button>
+                <button type="button" class="map-control" id="zoom-reset" aria-label="Enquadrar mapa" title="Enquadrar mapa">
+                  <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+                </button>
+                <button type="button" class="map-control is-on" id="cluster-toggle" aria-pressed="true" aria-label="Agrupar ocorrências próximas" title="Agrupar ocorrências próximas">
+                  <svg viewBox="0 0 24 24"><circle cx="8" cy="9" r="3.2"/><circle cx="16" cy="8" r="2.4"/><circle cx="14" cy="16" r="3.6"/></svg>
+                </button>
+              </div>
+              <div class="road-tooltip" id="road-tooltip" hidden></div>
               <div class="map-empty" id="map-empty">
                 <div class="empty-map-icon" aria-hidden="true">⌖</div>
                 <strong>Carregando ocorrências</strong>
@@ -188,18 +233,22 @@
                 <span><i class="legend-dot fatal-dot"></i> Com vítimas fatais</span>
                 <span><i class="legend-dot injury-dot"></i> Com feridos</span>
                 <span><i class="legend-dot safe-dot"></i> Sem vítimas</span>
+                <span><i class="legend-cluster">9</i> Grupo de ocorrências</span>
+                <span><i class="legend-road"></i> Rodovia federal</span>
               </div>
-              <div class="map-attribution">Limites municipais: geodata-br · CC0 <span>·</span> Base cartográfica vetorial</div>
+              <div class="map-attribution">Municípios: geodata-br (CC0) <span>·</span> Rodovias: © OpenStreetMap</div>
               <article class="incident-detail" id="incident-detail" hidden aria-live="polite"></article>
               <div class="map-loading" id="map-loading">Carregando mapa…</div>
             </div>
+            <aside class="road-panel" id="road-panel" hidden aria-live="polite"></aside>
+            </div>
             <div class="map-footer">
               <span id="map-status" role="status">Carregando dados incluídos neste deploy.</span>
-              <span>Arraste para mover · role para aproximar</span>
+              <span>Arraste para mover · role ou clique num grupo para aproximar</span>
             </div>
             <div class="incident-list-section">
               <div class="panel-title-row">
-                <div><span class="section-kicker">REGISTROS FILTRADOS</span><h3>Ocorrências recentes</h3></div>
+                <div><span class="section-kicker">Registros filtrados</span><h3>Ocorrências recentes</h3></div>
                 <span class="small-muted" id="list-count">0 registros</span>
               </div>
               <div class="incident-list" id="incident-list">
@@ -211,8 +260,13 @@
         <div class="toast" id="toast" role="status" aria-live="polite"></div>
       </main>
       <footer class="footer">
-        <span>MINAS EM ALERTA <span class="footer-separator">/</span> DADOS ABERTOS PARA UMA MOBILIDADE MAIS SEGURA</span>
-        <span>As fontes podem ser atualizadas e corrigidas pelos órgãos responsáveis.</span>
+        <span>Minas em Alerta <span class="footer-separator">/</span> Dados abertos para uma mobilidade mais segura</span>
+        <nav class="footer-sources" aria-label="Fontes oficiais">
+          <a href="https://www.gov.br/prf/pt-br/acesso-a-informacao/dados-abertos/dados-abertos-da-prf" target="_blank" rel="noreferrer">Fonte PRF ↗</a>
+          <a href="https://dados.mg.gov.br/dataset/sejusp_vitimas_acidentes_transito" target="_blank" rel="noreferrer">Fonte SEJUSP ↗</a>
+          <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">Traçado OSM ↗</a>
+        </nav>
+        <span>Os dados são incluídos em cada publicação do site e podem ser atualizados e corrigidos pelos órgãos responsáveis.</span>
       </footer>
     </div>
   </body>

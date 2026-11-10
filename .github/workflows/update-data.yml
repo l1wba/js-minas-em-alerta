@@ -1,0 +1,38 @@
+name: Atualizar dados PRF e SEJUSP
+
+on:
+  schedule:
+    # Toda segunda-feira às 09:00 UTC (06:00 em Brasília).
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-data
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Baixar fontes e gerar snapshots
+        id: update
+        run: python scripts/update_data.py
+
+      - name: Publicar dados novos
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/prf-2026.json data/sejusp-2026.json
+          git commit -m "chore(dados): atualiza snapshots oficiais (${{ steps.update.outputs.summary }})"
+          git push
