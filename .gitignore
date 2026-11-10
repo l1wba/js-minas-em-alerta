@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local environment and editor settings
+.env
+.env.*
+!.env.example
+.vscode/
+
+# Build and deployment output
+node_modules/
+dist/
+build/
+.vercel/
+
+# Local OS files and logs
+.DS_Store
+Thumbs.db
+*.log
+
+# Downloaded source files; generated JSON snapshots in data/ are required by the app
+data/*.csv
+data/*.zip
