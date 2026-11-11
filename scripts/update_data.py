@@ -8,8 +8,14 @@
 The snapshots are only rewritten when the data actually changed. When running in
 GitHub Actions, `changed=true|false` is written to $GITHUB_OUTPUT.
 
+By default it refreshes the current year (and, from January to March, also the previous
+one, which still gets late corrections). If the current year's file is not published yet,
+it is skipped with a warning. The list of years shown on the site is written to
+data/years.json.
+
 Usage:
-    python scripts/update_data.py [--year 2026] [--output data]
+    python scripts/update_data.py                         # current year (+ previous in Q1)
+    python scripts/update_data.py --years 2022 2023 2024  # specific years (backfill)
 """
 
 import argparse
@@ -22,10 +28,11 @@ import tempfile
 import urllib.parse
 import urllib.request
 import zipfile
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from generate_data import build_prf_snapshot, build_sejusp_snapshot, write_snapshot  # noqa: E402
+from generate_data import build_prf_snapshot, build_sejusp_snapshot, write_manifest, write_snapshot  # noqa: E402
 
 PRF_PAGE = "https://www.gov.br/prf/pt-br/acesso-a-informacao/dados-abertos/dados-abertos-da-prf"
 SEJUSP_API = "https://dados.mg.gov.br/api/3/action/package_show?id=sejusp_vitimas_acidentes_transito"
@@ -101,15 +108,21 @@ def load_json(path):
         return None
 
 
-def check_road_geometry(prf, roads_path):
-    roads = load_json(roads_path)
+def warn(message):
+    print(f"::warning::{message}" if os.environ.get("GITHUB_ACTIONS") else f"Aviso: {message}")
+
+
+def check_road_geometry(output):
+    roads = load_json(output / "minas-gerais-brs.geojson")
     if not roads:
         return
     drawn = {feature["properties"]["road"] for feature in roads.get("features", [])}
-    missing = sorted({incident["road"] for incident in prf["incidents"]} - drawn - {"BR-000", "BR não informada"})
+    used = set()
+    for path in output.glob("prf-*.json"):
+        used |= {incident["road"] for incident in load_json(path)["incidents"]}
+    missing = sorted(used - drawn - {"BR-000", "BR não informada"})
     if missing:
-        message = f"BRs sem traçado no mapa: {', '.join(missing)}. Rode scripts/build_roads.py."
-        print(f"::warning::{message}" if os.environ.get("GITHUB_ACTIONS") else f"Aviso: {message}")
+        warn(f"BRs sem traçado no mapa: {', '.join(missing)}. Rode scripts/build_roads.py.")
 
 
 def set_output(name, value):
@@ -119,29 +132,36 @@ def set_output(name, value):
             handle.write(f"{name}={value}\n")
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--year", type=int, default=2026)
-    parser.add_argument("--output", default="data")
-    args = parser.parse_args()
-    output = Path(args.output)
+def default_years():
+    today = date.today()
+    return [today.year, today.year - 1] if today.month <= 3 else [today.year]
+
+
+def update_year(year, output, optional):
+    """Download and rebuild one year. Returns the list of files that changed."""
+    try:
+        drive_id = find_prf_drive_id(year)
+    except RuntimeError:
+        if optional and not (output / f"prf-{year}.json").exists():
+            warn(f"A PRF ainda não publicou o arquivo de {year}; ano ignorado.")
+            return []
+        raise
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        drive_id = find_prf_drive_id(args.year)
-        print(f"PRF: baixando arquivo {drive_id} do Google Drive…")
+        print(f"PRF {year}: baixando arquivo {drive_id} do Google Drive…")
         prf_zip = tmp / "prf.zip"
         download_drive_file(drive_id, prf_zip)
-        prf = build_prf_snapshot(prf_zip)
+        prf = build_prf_snapshot(prf_zip, year)
 
-        sejusp_url = find_sejusp_url(args.year)
-        print(f"SEJUSP: baixando {sejusp_url}…")
+        sejusp_url = find_sejusp_url(year)
+        print(f"SEJUSP {year}: baixando {sejusp_url}…")
         sejusp_csv = tmp / "sejusp.csv"
         sejusp_csv.write_bytes(fetch(sejusp_url, timeout=600)[0])
-        sejusp = build_sejusp_snapshot(sejusp_csv)
+        sejusp = build_sejusp_snapshot(sejusp_csv, year)
 
     changed = []
-    for name, payload in (("prf-2026.json", prf), ("sejusp-2026.json", sejusp)):
+    for name, payload in ((f"prf-{year}.json", prf), (f"sejusp-{year}.json", sejusp)):
         path = output / name
         current = load_json(path)
         if current is not None and comparable(current) == comparable(payload):
@@ -151,18 +171,41 @@ def main():
             ratio = len(payload["incidents"]) / len(current["incidents"])
             if ratio < MIN_KEEP_RATIO:
                 raise RuntimeError(
-                    f"A nova base da PRF tem {len(payload['incidents'])} ocorrências contra "
+                    f"A nova base da PRF de {year} tem {len(payload['incidents'])} ocorrências contra "
                     f"{len(current['incidents'])} atuais; atualização interrompida por segurança."
                 )
         write_snapshot(path, payload)
         changed.append(name)
         print(f"{name}: atualizado.")
+    print(f"PRF {year}: {len(prf['incidents']):,} ocorrências até {prf['dataThrough']} · "
+          f"SEJUSP {year}: {sejusp['totalVictims']:,} registros até o mês {sejusp['dataThrough']}")
+    return changed
 
-    print(f"PRF: {len(prf['incidents']):,} ocorrências até {prf['dataThrough']}")
-    print(f"SEJUSP: {sejusp['totalVictims']:,} registros até o mês {sejusp['dataThrough']}")
-    check_road_geometry(prf, output / "minas-gerais-brs.geojson")
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--years", type=int, nargs="+", help="Anos a atualizar (padrão: ano atual)")
+    parser.add_argument("--output", default="data")
+    args = parser.parse_args()
+    output = Path(args.output)
+    explicit = bool(args.years)
+    years = sorted(set(args.years or default_years()))
+
+    changed = []
+    for year in years:
+        # Only the current year may be missing (e.g. early January); explicit years must exist.
+        changed += update_year(year, output, optional=not explicit and year == date.today().year)
+
+    manifest_path = output / "years.json"
+    previous_manifest = load_json(manifest_path)
+    manifest = write_manifest(output)
+    if manifest != previous_manifest:
+        changed.append("years.json")
+
+    check_road_geometry(output)
     set_output("changed", "true" if changed else "false")
-    set_output("summary", f"PRF até {prf['dataThrough']}, SEJUSP até o mês {sejusp['dataThrough']}")
+    latest = manifest["years"][0] if manifest["years"] else {}
+    set_output("summary", f"{', '.join(str(year) for year in years)} · PRF até {latest.get('prfThrough', '?')}")
 
 
 if __name__ == "__main__":

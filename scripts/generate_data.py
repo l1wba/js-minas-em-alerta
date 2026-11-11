@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build small, deployable JSON snapshots from the official 2026 CSV files."""
+"""Build small, deployable JSON snapshots from the official yearly CSV files (PRF and SEJUSP)."""
 
 import argparse
 import csv
@@ -75,14 +75,14 @@ def csv_rows(content):
     yield from reader
 
 
-def build_prf_snapshot(path):
+def build_prf_snapshot(path, year):
     rows = read_csv_rows(path)
     if not rows or not PRF_COLUMNS.issubset(rows[0]):
-        raise ValueError("PRF CSV must be the 2026 dataset grouped by occurrence")
+        raise ValueError(f"PRF CSV must be the {year} dataset grouped by occurrence")
 
     incidents = []
     for row in rows:
-        if clean(row.get("uf")).upper() != "MG" or not clean(row.get("data_inversa")).startswith("2026"):
+        if clean(row.get("uf")).upper() != "MG" or not clean(row.get("data_inversa")).startswith(str(year)):
             continue
         latitude = number(row.get("latitude"))
         longitude = number(row.get("longitude"))
@@ -117,9 +117,10 @@ def build_prf_snapshot(path):
         })
 
     if not incidents:
-        raise ValueError("No geolocated PRF incidents from 2026 in Minas Gerais were found")
+        raise ValueError(f"No geolocated PRF incidents from {year} in Minas Gerais were found")
     return {
         "source": "PRF · Acidentes agrupados por ocorrência",
+        "year": year,
         "dataThrough": max(incident["date"] for incident in incidents),
         "incidents": incidents,
     }
@@ -134,14 +135,14 @@ def municipality_label(value):
     )
 
 
-def build_sejusp_snapshot(path):
+def build_sejusp_snapshot(path, year):
     rows = read_csv_rows(path)
     if not rows or not SEJUSP_COLUMNS.issubset(rows[0]):
-        raise ValueError("SEJUSP CSV must be the 2026 traffic accident victims dataset")
+        raise ValueError(f"SEJUSP CSV must be the {year} traffic accident victims dataset")
 
     municipalities = defaultdict(Counter)
     for row in rows:
-        if clean(row.get("ano_fato")) != "2026":
+        if clean(row.get("ano_fato")) != str(year):
             continue
         municipality = clean(row.get("nome_municipio_fato"))
         if not municipality:
@@ -151,7 +152,7 @@ def build_sejusp_snapshot(path):
         municipalities[municipality][month] += 1
 
     if not municipalities:
-        raise ValueError("No SEJUSP victim records from 2026 were found")
+        raise ValueError(f"No SEJUSP victim records from {year} were found")
 
     by_municipality = [
         {
@@ -163,6 +164,7 @@ def build_sejusp_snapshot(path):
     ]
     return {
         "source": "SEJUSP-MG · Vítimas de acidente de trânsito",
+        "year": year,
         "dataThrough": max(
             month for city in by_municipality for month in city["byMonth"]
         ),
@@ -177,20 +179,47 @@ def write_snapshot(path, payload):
     path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
+def write_manifest(output):
+    """List the available years in data/years.json, which the site reads first."""
+    output = Path(output)
+    years = []
+    for path in sorted(output.glob("prf-*.json")):
+        match = re.fullmatch(r"prf-(\d{4})\.json", path.name)
+        if not match:
+            continue
+        year = int(match.group(1))
+        prf = json.loads(path.read_text(encoding="utf-8"))
+        sejusp_path = output / f"sejusp-{year}.json"
+        sejusp = json.loads(sejusp_path.read_text(encoding="utf-8")) if sejusp_path.exists() else None
+        years.append({
+            "year": year,
+            "incidents": len(prf["incidents"]),
+            "deaths": sum(incident["deaths"] for incident in prf["incidents"]),
+            "prfThrough": prf["dataThrough"],
+            "sejuspThrough": sejusp["dataThrough"] if sejusp else None,
+        })
+    years.sort(key=lambda item: item["year"], reverse=True)
+    manifest = {"latest": years[0]["year"] if years else None, "years": years}
+    (output / "years.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--prf", required=True, help="PRF 2026 grouped-by-occurrence CSV or ZIP")
-    parser.add_argument("--sejusp", required=True, help="SEJUSP 2026 victims CSV")
+    parser.add_argument("--year", type=int, required=True, help="Year of the files, e.g. 2026")
+    parser.add_argument("--prf", required=True, help="PRF grouped-by-occurrence CSV or ZIP for that year")
+    parser.add_argument("--sejusp", required=True, help="SEJUSP victims CSV for that year")
     parser.add_argument("--output", default="data", help="Directory for generated JSON snapshots")
     args = parser.parse_args()
 
     output = Path(args.output)
-    prf = build_prf_snapshot(args.prf)
-    sejusp = build_sejusp_snapshot(args.sejusp)
-    write_snapshot(output / "prf-2026.json", prf)
-    write_snapshot(output / "sejusp-2026.json", sejusp)
-    print(f"PRF: {len(prf['incidents']):,} occurrences")
-    print(f"SEJUSP: {sejusp['totalVictims']:,} victim records in {len(sejusp['byMunicipality']):,} municipalities")
+    prf = build_prf_snapshot(args.prf, args.year)
+    sejusp = build_sejusp_snapshot(args.sejusp, args.year)
+    write_snapshot(output / f"prf-{args.year}.json", prf)
+    write_snapshot(output / f"sejusp-{args.year}.json", sejusp)
+    write_manifest(output)
+    print(f"PRF {args.year}: {len(prf['incidents']):,} occurrences")
+    print(f"SEJUSP {args.year}: {sejusp['totalVictims']:,} victim records in {len(sejusp['byMunicipality']):,} municipalities")
 
 
 if __name__ == "__main__":

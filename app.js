@@ -38,7 +38,10 @@ const state = {
   drag: null,
   animation: 0,
   colors: {},
-  toastTimer: null
+  toastTimer: null,
+  year: null,
+  years: [],
+  yearToken: 0
 };
 
 const elements = {};
@@ -46,20 +49,26 @@ const elements = {};
 document.addEventListener("DOMContentLoaded", () => {
   [
     "map-svg", "municipalities", "roads", "markers", "map-canvas", "map-stage", "map-loading", "map-empty",
-    "map-status", "map-count", "map-title", "map-caption", "incident-detail", "incident-list",
+    "map-status", "map-title", "map-caption", "incident-detail", "incident-list",
     "list-count", "metric-occurrences", "metric-occurrences-note", "metric-fatalities", "metric-injured",
-    "source-count", "road-filter", "type-filter", "cause-filter", "severity-chips", "period-chips", "weather-chips",
+    "road-filter", "type-filter", "cause-filter", "severity-chips", "period-chips", "weather-chips",
     "filter-count", "cluster-toggle",
     "search", "road-ranking", "state-victims", "state-data-through", "municipality-list",
-    "toast", "reset-filters", "zoom-in", "zoom-out", "zoom-reset", "road-tooltip", "road-panel", "theme-toggle"
+    "toast", "reset-filters", "zoom-in", "zoom-out", "zoom-reset", "road-tooltip", "road-panel", "theme-toggle",
+    "year-picker", "year-eyebrow", "year-note", "state-summary-label", "trend-chart", "trend-foot"
   ].forEach((id) => { elements[id] = document.getElementById(id); });
 
   readThemeColors();
   bindSidebarTabs();
+  bindTopNav();
   bindEvents();
   loadBoundary();
   loadRoads();
-  loadStaticSnapshots();
+  loadYears();
+  window.addEventListener("hashchange", () => {
+    const year = yearFromHash();
+    if (year && year !== state.year && state.years.some((item) => item.year === year)) selectYear(year, { updateHash: false });
+  });
 });
 
 /* ---------- Theme ---------- */
@@ -174,6 +183,7 @@ async function loadBoundary() {
   } catch (error) {
     elements["map-loading"].textContent = "Não foi possível carregar o mapa vetorial.";
     elements["map-status"].textContent = `Erro ao carregar o limite de Minas Gerais: ${error.message}`;
+    elements["map-status"].hidden = false;
     elements["map-status"].classList.add("status-error");
     notify("Não foi possível carregar o mapa. Verifique a conexão e tente atualizar a página.", "error");
   }
@@ -184,15 +194,16 @@ async function loadRoads() {
     const response = await fetch("./data/minas-gerais-brs.geojson");
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const geojson = await response.json();
-    state.roads = (geojson.features || []).filter((feature) => (
+    const features = (geojson.features || []).filter((feature) => (
       feature && feature.properties && feature.geometry && feature.geometry.type === "MultiLineString"
     )).map((feature) => {
       const lines = feature.geometry.coordinates.map((line) => {
         const points = line.map(([longitude, latitude]) => toMapCoordinates(longitude, latitude));
         return { points, bbox: bboxOf(points) };
       });
-      return { road: feature.properties.road, lines, bbox: mergeBoxes(lines.map((line) => line.bbox)) };
+      return { road: feature.properties.road, kind: feature.properties.kind || "road", lines, bbox: mergeBoxes(lines.map((line) => line.bbox)) };
     });
+    state.roads = features.filter((feature) => feature.kind === "road");
     renderRoads();
     drawNow();
   } catch (error) {
@@ -201,36 +212,842 @@ async function loadRoads() {
   }
 }
 
-async function loadStaticSnapshots() {
-  const results = await Promise.allSettled([
-    loadStaticPrfSnapshot(),
-    loadStaticSejuspSnapshot()
-  ]);
-  results.forEach((result, index) => {
-    if (result.status === "rejected") {
-      const source = index === 0 ? "PRF" : "SEJUSP";
-      console.error(`Não foi possível carregar a cópia estática da fonte ${source}.`, result.reason);
-      if (source === "PRF") {
-        elements["map-empty"].querySelector("strong").textContent = "Base da PRF indisponível";
-        elements["map-empty"].querySelector("span").textContent = "Não foi possível carregar os dados de acidentes incluídos neste deploy.";
-        elements["map-status"].textContent = "Não foi possível carregar a base estática da PRF.";
-      } else {
-        elements["state-victims"].textContent = "—";
-        elements["state-data-through"].textContent = "Não foi possível carregar a base estadual incluída neste deploy.";
-        elements["municipality-list"].innerHTML = '<p class="empty-inline">Resumo estadual indisponível.</p>';
+/* ---------- Years ---------- */
+
+async function loadYears() {
+  let manifest = null;
+  try {
+    const response = await fetch("./data/years.json", { cache: "no-cache" });
+    if (response.ok) manifest = await response.json();
+  } catch (error) {
+    console.error("Não foi possível carregar a lista de anos.", error);
+  }
+  const years = manifest && Array.isArray(manifest.years) && manifest.years.length
+    ? manifest.years.filter((item) => Number.isInteger(item.year)).sort((a, b) => a.year - b.year)
+    : [{ year: 2026 }];
+  state.years = years;
+  const range = document.getElementById("year-range");
+  if (range && years.length) {
+    range.textContent = years.length > 1 ? `de ${years[0].year} a ${years[years.length - 1].year}` : `em ${years[0].year}`;
+  }
+  const requested = yearFromHash();
+  const latest = years[years.length - 1].year;
+  renderYearPicker();
+  bindInsights();
+  bindStatsPeriod();
+  renderStatsPeriodChips();
+  watchStatsVisibility();
+  await selectYear(years.some((item) => item.year === requested) ? requested : latest, { updateHash: false });
+}
+
+function yearFromHash() {
+  const match = /(?:^|[#&])ano=(\d{4})/.exec(window.location.hash);
+  return match ? Number(match[1]) : null;
+}
+
+function yearInfo(year) {
+  return (state.years || []).find((item) => item.year === year) || { year };
+}
+
+function isPartialYear(info) {
+  return Boolean(info.prfThrough) && !info.prfThrough.endsWith("-12-31");
+}
+
+function renderYearPicker() {
+  const picker = elements["year-picker"];
+  picker.innerHTML = state.years.map((info) => {
+    const partial = isPartialYear(info);
+    const note = info.incidents
+      ? `${formatInteger(info.incidents)} ocorr.${partial ? ` · até ${shortMonth(info.prfThrough)}` : ""}`
+      : "";
+    return `<button type="button" class="year-option" role="radio" data-year="${info.year}" aria-checked="${info.year === state.year}" tabindex="${info.year === state.year ? 0 : -1}">
+      <b>${info.year}${partial ? '<i class="year-partial" title="Ano em andamento">parcial</i>' : ""}</b>
+      ${note ? `<small>${note}</small>` : ""}
+    </button>`;
+  }).join("");
+  picker.querySelectorAll("[data-year]").forEach((button, index, all) => {
+    button.addEventListener("click", () => selectYear(Number(button.dataset.year)));
+    button.addEventListener("keydown", (event) => {
+      const offset = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+      if (!offset) return;
+      event.preventDefault();
+      const next = all[(index + offset + all.length) % all.length];
+      next.focus();
+      selectYear(Number(next.dataset.year));
+    });
+  });
+}
+
+/* ---------- Statistics section ---------- */
+
+const WEEKDAYS_SHORT = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+const WEEKDAYS_LONG = ["Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"];
+const MONTHS_SHORT = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+const MONTHS_LONG = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+const PERIOD_LABELS = { madrugada: "Madrugada", manha: "Manhã", tarde: "Tarde", noite: "Noite" };
+
+function dateParts(date, time) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(date || "");
+  const hour = Number(String(time || "").slice(0, 2));
+  return {
+    month: match ? Number(match[2]) - 1 : -1,
+    weekday: match ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))).getUTCDay() : -1,
+    hour: Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : -1
+  };
+}
+
+function bindInsights() {
+  document.querySelectorAll(".trend-toggle [data-measure]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.trendMeasure = button.dataset.measure;
+      pressOnly(button);
+      renderTrend();
+    });
+  });
+  document.querySelectorAll("#stretch-toggle [data-sort]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.stretchSort = button.dataset.sort;
+      pressOnly(button);
+      renderStretches(state.statsIncidents || []);
+    });
+  });
+}
+
+function pressOnly(button) {
+  button.parentElement.querySelectorAll("button").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+}
+
+/* ---------- Statistics period (independent from the map) ---------- */
+
+/*
+ * The statistics section has its own date range. "map" mode follows the year shown on the
+ * map; any other range loads the needed yearly files and never touches the map's data.
+ */
+function statsBounds() {
+  const years = (state.years || []).map((info) => info.year).sort((a, b) => a - b);
+  const latest = (state.years || []).reduce((best, info) => (!best || info.year > best.year ? info : best), null);
+  return {
+    min: years.length ? `${years[0]}-01-01` : "2022-01-01",
+    max: latest && latest.prfThrough ? latest.prfThrough : `${new Date().getFullYear()}-12-31`
+  };
+}
+
+function currentStatsRange() {
+  const period = state.statsPeriod || { mode: "map" };
+  if (period.mode === "map") {
+    const info = yearInfo(state.year);
+    return {
+      mode: "map",
+      from: `${state.year}-01-01`,
+      to: info.prfThrough || `${state.year}-12-31`,
+      label: `${state.year}${isPartialYear(info) ? ` (até ${formatDate(info.prfThrough)})` : ""} · mesmo ano do mapa`
+    };
+  }
+  const { max } = statsBounds();
+  const to = period.to > max ? max : period.to;
+  const label = period.label || `${formatDate(period.from)} a ${formatDate(to)}`;
+  return { mode: period.mode, from: period.from, to, label };
+}
+
+function bindStatsPeriod() {
+  const chips = document.getElementById("stats-period-chips");
+  chips.addEventListener("click", (event) => {
+    const chip = event.target.closest("[data-period]");
+    if (!chip) return;
+    const value = chip.dataset.period;
+    const { min, max } = statsBounds();
+    if (value === "map") setStatsPeriod({ mode: "map" });
+    else if (value === "all") setStatsPeriod({ mode: "all", from: min, to: max, label: `Todos os anos (${min.slice(0, 4)}–${max.slice(0, 4)})` });
+    else if (value === "12m") setStatsPeriod({ mode: "12m", from: twelveMonthsBefore(max), to: max, label: `Últimos 12 meses publicados (até ${formatDate(max)})` });
+    else setStatsPeriod({ mode: `year-${value}`, from: `${value}-01-01`, to: `${value}-12-31`, label: value });
+  });
+  ["stats-from", "stats-to"].forEach((id) => {
+    document.getElementById(id).addEventListener("change", () => {
+      const from = document.getElementById("stats-from").value;
+      const to = document.getElementById("stats-to").value;
+      if (!from || !to) return;
+      if (from > to) {
+        notify("A data inicial precisa ser anterior à final.", "error");
+        return;
       }
-      notify(`Não foi possível carregar a base ${source} incluída no site. Consulte o estado da fonte e tente novamente.`, "error");
+      setStatsPeriod({ mode: "custom", from, to });
+    });
+  });
+}
+
+function renderStatsPeriodChips() {
+  const chips = document.getElementById("stats-period-chips");
+  const years = (state.years || []).map((info) => info.year).sort((a, b) => a - b);
+  const options = [["map", "Ano do mapa"], ...years.map((year) => [String(year), String(year)]), ["all", "Todos os anos"], ["12m", "Últimos 12 meses"]];
+  const mode = (state.statsPeriod || { mode: "map" }).mode;
+  chips.innerHTML = options.map(([value, label]) => {
+    const active = mode === value || mode === `year-${value}`;
+    return `<button type="button" class="chip period-chip" data-period="${value}" aria-pressed="${active}">${label}</button>`;
+  }).join("");
+  const { min, max } = statsBounds();
+  const range = currentStatsRange();
+  ["stats-from", "stats-to"].forEach((id) => {
+    const input = document.getElementById(id);
+    input.min = min;
+    input.max = max;
+  });
+  document.getElementById("stats-from").value = range.from < min ? min : range.from;
+  document.getElementById("stats-to").value = range.to > max ? max : range.to;
+}
+
+function setStatsPeriod(period) {
+  state.statsPeriod = period;
+  renderStatsPeriodChips();
+  renderInsights();
+}
+
+/* First day of the 12-month window that ends on `isoDate` (e.g. 2026-09-30 -> 2025-10-01). */
+function twelveMonthsBefore(isoDate) {
+  const [year, month] = isoDate.split("-").map(Number);
+  return month === 12 ? `${year}-01-01` : `${year - 1}-${String(month + 1).padStart(2, "0")}-01`;
+}
+
+const normalizedYearCache = new Map();
+async function getYearIncidents(year) {
+  if (!normalizedYearCache.has(year)) {
+    const promise = loadYearFile("prf", year).then((snapshot) => normalizePrfSnapshot(snapshot, year));
+    promise.catch(() => normalizedYearCache.delete(year));
+    normalizedYearCache.set(year, promise);
+  }
+  return normalizedYearCache.get(year);
+}
+
+function renderInsights() {
+  if (!document.getElementById("kpi-row")) return;
+  const range = currentStatsRange();
+  if (range.mode === "map") {
+    renderStats(state.filteredIncidents, range);
+    return;
+  }
+  loadStatsRange(range);
+}
+
+async function loadStatsRange(range) {
+  const token = (state.statsToken || 0) + 1;
+  state.statsToken = token;
+  const years = (state.years || []).map((info) => info.year)
+    .filter((year) => `${year}-12-31` >= range.from && `${year}-01-01` <= range.to);
+  document.getElementById("insights-scope").textContent = `${range.label} · carregando…`;
+  let incidents;
+  try {
+    incidents = (await Promise.all(years.map(getYearIncidents))).flat();
+  } catch (error) {
+    if (token !== state.statsToken) return;
+    console.error("Não foi possível carregar os anos do período.", error);
+    document.getElementById("insights-scope").textContent = `${range.label} · não foi possível carregar os dados.`;
+    return;
+  }
+  if (token !== state.statsToken) return;
+  const spec = state.filterSpec;
+  const inRange = incidents.filter((incident) => incident.date >= range.from && incident.date <= range.to);
+  const base = spec ? inRange.filter((incident) => spec.baseMatches(incident) && (!spec.road || incident.road === spec.road)) : inRange;
+  const filtered = spec && spec.weather.size ? base.filter((incident) => spec.weather.has(incident.weather)) : base;
+  renderStats(filtered, range);
+}
+
+function renderStats(incidents, range) {
+  state.statsIncidents = incidents;
+  state.statsRange = range;
+  const road = selectedRoad();
+  const filters = Number(elements["filter-count"].textContent) - (road ? 1 : 0);
+  document.getElementById("insights-scope").textContent = [
+    range.label,
+    road || "todas as BRs",
+    filters > 0 ? `${filters} ${filters === 1 ? "filtro ativo" : "filtros ativos"}` : "sem filtros",
+    `${formatInteger(incidents.length)} ${incidents.length === 1 ? "ocorrência" : "ocorrências"}`
+  ].join(" · ");
+  renderKpis(incidents, range);
+  renderTrend();
+  renderMonths(incidents, range);
+  renderStretches(incidents);
+  renderCities(incidents);
+  renderWeatherStats(incidents);
+  renderHeatmap(incidents);
+  renderTypeStats(incidents);
+  renderCauseStats(incidents);
+}
+
+function emptyBlock(message = "Sem ocorrências para os filtros atuais.") {
+  return `<p class="empty-inline">${message}</p>`;
+}
+
+function renderKpis(incidents, range) {
+  const row = document.getElementById("kpi-row");
+  if (!incidents.length) {
+    row.innerHTML = ["Letalidade", "Dia mais crítico", "Horário de pico", "Mês com mais mortes"]
+      .map((label) => `<div class="kpi"><span>${label}</span><strong>—</strong><small>sem dados</small></div>`).join("");
+    return;
+  }
+  const deaths = sumOf(incidents, (incident) => incident.deaths);
+  const byWeekday = countBy(incidents, (incident) => incident.weekday, 7);
+  const byHour = countBy(incidents, (incident) => incident.hour, 24);
+  const deathsByMonth = new Map();
+  incidents.forEach((incident) => {
+    if (incident.month < 0) return;
+    const key = incident.date.slice(0, 7);
+    deathsByMonth.set(key, (deathsByMonth.get(key) || 0) + incident.deaths);
+  });
+  const multiYear = range.from.slice(0, 4) !== range.to.slice(0, 4);
+  const [topMonthKey, topMonthDeaths] = [...deathsByMonth.entries()].sort((a, b) => b[1] - a[1])[0] || ["", 0];
+  const topMonthLabel = topMonthKey
+    ? `${MONTHS_LONG[Number(topMonthKey.slice(5, 7)) - 1]}${multiYear ? ` de ${topMonthKey.slice(0, 4)}` : ""}`
+    : "—";
+  const topDay = argMax(byWeekday);
+  const topHour = argMax(byHour);
+  const kpis = [
+    ["Letalidade", formatDecimal(deaths / incidents.length * 100), "mortes a cada 100 ocorrências"],
+    ["Dia mais crítico", WEEKDAYS_LONG[topDay], `${formatInteger(byWeekday[topDay])} ocorrências · ${formatPercent(byWeekday[topDay] / incidents.length)}`],
+    ["Horário de pico", `${String(topHour).padStart(2, "0")}h–${String((topHour + 1) % 24).padStart(2, "0")}h`, `${formatInteger(byHour[topHour])} ocorrências nessa hora`],
+    ["Mês com mais mortes", topMonthDeaths ? topMonthLabel : "—", topMonthDeaths ? `${formatInteger(topMonthDeaths)} mortes` : "nenhuma morte registrada"]
+  ];
+  row.innerHTML = kpis.map(([label, value, note]) => `<div class="kpi"><span>${label}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(note)}</small></div>`).join("");
+}
+
+/* Column chart shared by the year and month cards. */
+function columnChart(chart, columns, { clickable = false } = {}) {
+  const maximum = Math.max(1, ...columns.map((column) => column.value || 0));
+  chart.innerHTML = columns.map((column) => {
+    const tag = clickable ? "button" : "div";
+    const attrs = clickable ? `type="button" data-key="${escapeHtml(column.key)}"` : 'tabindex="0"';
+    return `<${tag} ${attrs} role="listitem" class="col-bar${column.partial ? " is-partial" : ""}${column.peak ? " is-peak" : ""}"
+      aria-current="${Boolean(column.current)}" data-tip="${column.tip.map(escapeHtml).join("&#10;")}" aria-label="${escapeHtml(column.tip.join(". "))}">
+      <b>${escapeHtml(column.label)}</b>
+      <i style="height:${column.value ? Math.max(3, column.value / maximum * 100) : 0}%"></i>
+    </${tag}>`;
+  }).join("");
+  let axis = chart.nextElementSibling;
+  if (!axis || !axis.classList.contains("col-axis")) {
+    axis = document.createElement("div");
+    axis.className = "col-axis";
+    axis.setAttribute("aria-hidden", "true");
+    chart.after(axis);
+  }
+  axis.innerHTML = columns.map((column) => `<span class="${column.current ? "is-current" : ""}">${escapeHtml(column.axis)}</span>`).join("");
+}
+
+/*
+ * Annual evolution, following the statistics period and the sidebar filters.
+ * - Period inside one calendar year: every year is compared over the same day window
+ *   (e.g. Jan 1 – Sep 30), which keeps the ongoing year comparable.
+ * - Period across years: only the years in the period, each clipped to it.
+ * Other years' files are only downloaded once the statistics section is near the screen.
+ */
+function trendWindows(range) {
+  const years = (state.years || []).map((info) => info.year).sort((a, b) => a - b);
+  const { max } = statsBounds();
+  const sameYear = range.from.slice(0, 4) === range.to.slice(0, 4);
+  if (sameYear) {
+    const fromDay = range.from.slice(5);
+    const toDay = range.to.slice(5);
+    return {
+      sameYear,
+      fromDay,
+      toDay,
+      windows: years.map((year) => {
+        const to = `${year}-${toDay}`;
+        return { year, from: `${year}-${fromDay}`, to: to > max ? max : to, partial: to > max };
+      }).filter((window) => window.from <= window.to)
+    };
+  }
+  return {
+    sameYear,
+    windows: years
+      .filter((year) => `${year}-12-31` >= range.from && `${year}-01-01` <= range.to)
+      .map((year) => {
+        const from = range.from > `${year}-01-01` ? range.from : `${year}-01-01`;
+        const to = [range.to, `${year}-12-31`, max].sort()[0];
+        return { year, from, to, partial: from !== `${year}-01-01` || to !== `${year}-12-31` };
+      })
+  };
+}
+
+async function renderTrend() {
+  const chart = elements["trend-chart"];
+  const subtitle = document.getElementById("trend-subtitle");
+  const range = state.statsRange;
+  if (!range || !(state.years || []).length) return;
+  const { sameYear, fromDay, toDay, windows } = trendWindows(range);
+  const fullYear = sameYear && fromDay === "01-01" && toDay === "12-31";
+  const windowLabel = sameYear && !fullYear ? `${fromDay.split("-").reverse().join("/")} a ${toDay.split("-").reverse().join("/")}` : "";
+  const filtersActive = Number(elements["filter-count"].textContent) > 0;
+  subtitle.textContent = [
+    sameYear ? (fullYear ? "Ano inteiro, ano a ano" : `Mesmo período (${windowLabel}) em cada ano`) : "Anos do período escolhido",
+    filtersActive ? "com os filtros aplicados" : "sem filtros"
+  ].join(" · ");
+
+  if (!state.statsVisible) {
+    chart.innerHTML = emptyBlock("O gráfico é carregado ao chegar nesta seção.");
+    return;
+  }
+  const token = (state.trendToken || 0) + 1;
+  state.trendToken = token;
+  chart.setAttribute("aria-busy", "true");
+  let perYear;
+  try {
+    perYear = await Promise.all(windows.map((window) => getYearIncidents(window.year)));
+  } catch (error) {
+    if (token === state.trendToken) chart.innerHTML = emptyBlock("Não foi possível carregar os anos.");
+    return;
+  }
+  if (token !== state.trendToken) return;
+  chart.removeAttribute("aria-busy");
+
+  const spec = state.filterSpec;
+  const values = windows.map((window, index) => {
+    let count = 0;
+    let deaths = 0;
+    for (const incident of perYear[index]) {
+      if (incident.date < window.from || incident.date > window.to) continue;
+      if (spec && (!spec.baseMatches(incident) || (spec.road && incident.road !== spec.road) || (spec.weather.size && !spec.weather.has(incident.weather)))) continue;
+      count += 1;
+      deaths += incident.deaths;
+    }
+    return { ...window, count, deaths };
+  });
+
+  const measure = state.trendMeasure || "deaths";
+  const valueOf = (item) => (measure === "rate" ? (item.count ? item.deaths / item.count * 100 : 0) : measure === "incidents" ? item.count : item.deaths);
+  const selectedYears = new Set(windows
+    .filter((window) => `${window.year}-12-31` >= range.from && `${window.year}-01-01` <= range.to)
+    .map((window) => window.year));
+  columnChart(chart, values.map((item) => {
+    const value = valueOf(item);
+    return {
+      key: String(item.year),
+      value,
+      label: measure === "rate" ? formatDecimal(value) : formatInteger(value),
+      axis: `${item.year}${item.partial ? "*" : ""}`,
+      partial: item.partial,
+      current: selectedYears.has(item.year),
+      tip: [
+        `${item.year} · ${formatDate(item.from)} a ${formatDate(item.to)}`,
+        `${formatInteger(item.deaths)} mortes · ${formatInteger(item.count)} ocorrências`,
+        `${item.count ? formatDecimal(item.deaths / item.count * 100) : "—"} mortes a cada 100 ocorrências`
+      ]
+    };
+  }));
+
+  const partial = values.filter((item) => item.partial);
+  const notes = [];
+  if (partial.length) {
+    const span = (item) => (item.from.endsWith("-01-01") ? `${item.year} até ${formatDate(item.to)}` : `${item.year} de ${formatDate(item.from)} a ${formatDate(item.to)}`);
+    notes.push(`* Ano incompleto: ${partial.map(span).join("; ")}.`);
+  }
+  if (values.length > 1) {
+    const sorted = [...values].sort((a, b) => valueOf(b) - valueOf(a));
+    const word = measure === "incidents" ? "Mais ocorrências" : measure === "rate" ? "Maior letalidade" : "Mais mortes";
+    const least = measure === "incidents" ? "menos ocorrências" : measure === "rate" ? "menor letalidade" : "menos mortes";
+    notes.push(`${word}: ${sorted[0].year}; ${least}: ${sorted[sorted.length - 1].year}.`);
+  }
+  elements["trend-foot"].textContent = notes.join(" ");
+}
+
+function watchStatsVisibility() {
+  const section = document.getElementById("estatisticas");
+  if (!section) {
+    state.statsVisible = true;
+    return;
+  }
+  const reveal = () => {
+    if (state.statsVisible) return;
+    state.statsVisible = true;
+    window.removeEventListener("scroll", check);
+    if (observer) observer.disconnect();
+    renderTrend();
+  };
+  // Scroll check as a fallback for browsers or embedded views where the observer does not fire.
+  const check = () => {
+    if (section.getBoundingClientRect().top < window.innerHeight + 600) reveal();
+  };
+  const observer = "IntersectionObserver" in window
+    ? new IntersectionObserver((entries) => { if (entries.some((entry) => entry.isIntersecting)) reveal(); }, { rootMargin: "600px 0px" })
+    : null;
+  if (observer) observer.observe(section);
+  window.addEventListener("scroll", check, { passive: true });
+  check();
+}
+
+/*
+ * Up to 24 months: one column per month in order. Longer ranges: totals per calendar month
+ * (all Januaries together, etc.), which keeps the chart readable.
+ */
+function renderMonths(incidents, range) {
+  const chart = document.getElementById("month-chart");
+  const subtitle = document.getElementById("months-subtitle");
+  const months = [];
+  let cursor = range.from.slice(0, 7);
+  const last = range.to.slice(0, 7);
+  while (cursor <= last && months.length < 240) {
+    months.push(cursor);
+    const [year, month] = cursor.split("-").map(Number);
+    cursor = month === 12 ? `${year + 1}-01` : `${year}-${String(month + 1).padStart(2, "0")}`;
+  }
+  const published = statsBounds().max.slice(0, 7);
+  const byKey = new Map();
+  incidents.forEach((incident) => {
+    const key = incident.date.slice(0, 7);
+    const entry = byKey.get(key) || { count: 0, deaths: 0 };
+    entry.count += 1;
+    entry.deaths += incident.deaths;
+    byKey.set(key, entry);
+  });
+
+  if (months.length <= 24) {
+    const multiYear = months[0].slice(0, 4) !== months[months.length - 1].slice(0, 4);
+    const values = months.map((key) => byKey.get(key) || { count: 0, deaths: 0 });
+    const peak = argMax(values.map((value) => value.count));
+    subtitle.textContent = values[peak] && values[peak].count
+      ? `Ocorrências por mês · pico em ${MONTHS_LONG[Number(months[peak].slice(5, 7)) - 1].toLowerCase()}${multiYear ? ` de ${months[peak].slice(0, 4)}` : ""}`
+      : "Ocorrências por mês";
+    chart.classList.toggle("is-dense", months.length > 14);
+    columnChart(chart, months.map((key, index) => {
+      const monthName = MONTHS_LONG[Number(key.slice(5, 7)) - 1];
+      const missing = key > published;
+      return {
+        key,
+        value: values[index].count,
+        label: missing ? "" : formatInteger(values[index].count),
+        // Year only on the first column and on each January, so the labels fit.
+        axis: multiYear && (index === 0 || key.endsWith("-01"))
+          ? `${MONTHS_SHORT[Number(key.slice(5, 7)) - 1]}/${key.slice(2, 4)}`
+          : MONTHS_SHORT[Number(key.slice(5, 7)) - 1],
+        peak: values[peak].count > 0 && index === peak,
+        tip: missing
+          ? [`${monthName} de ${key.slice(0, 4)}`, "Ainda sem dados publicados"]
+          : [`${monthName} de ${key.slice(0, 4)}`, `${formatInteger(values[index].count)} ocorrências · ${formatInteger(values[index].deaths)} mortes`]
+      };
+    }));
+    return;
+  }
+
+  const counts = new Array(12).fill(0);
+  const deaths = new Array(12).fill(0);
+  const yearsPerMonth = new Array(12).fill(0);
+  months.forEach((key) => { if (key <= published) yearsPerMonth[Number(key.slice(5, 7)) - 1] += 1; });
+  incidents.forEach((incident) => {
+    if (incident.month < 0) return;
+    counts[incident.month] += 1;
+    deaths[incident.month] += incident.deaths;
+  });
+  const peak = argMax(counts);
+  subtitle.textContent = `Soma por mês do ano no período${counts[peak] ? ` · mais ocorrências em ${MONTHS_LONG[peak].toLowerCase()}` : ""}`;
+  chart.classList.remove("is-dense");
+  columnChart(chart, MONTHS_SHORT.map((label, month) => ({
+    key: String(month),
+    value: counts[month],
+    label: compactCount(counts[month]),
+    axis: label,
+    peak: counts[peak] > 0 && month === peak,
+    tip: [
+      `${MONTHS_LONG[month]} (${yearsPerMonth[month]} ${yearsPerMonth[month] === 1 ? "ano" : "anos"} no período)`,
+      `${formatInteger(counts[month])} ocorrências · ${formatInteger(deaths[month])} mortes`
+    ]
+  })));
+}
+
+function computeStretches(incidents) {
+  const bins = new Map();
+  incidents.forEach((incident) => {
+    if (!Number.isFinite(incident.kmValue)) return;
+    const start = Math.floor(incident.kmValue / 10) * 10;
+    const key = `${incident.road}|${start}`;
+    const bin = bins.get(key) || { road: incident.road, start, count: 0, deaths: 0, cities: new Map(), points: [] };
+    bin.count += 1;
+    bin.deaths += incident.deaths;
+    bin.cities.set(incident.city, (bin.cities.get(incident.city) || 0) + 1);
+    bin.points.push([incident.x, incident.y]);
+    bins.set(key, bin);
+  });
+  return [...bins.values()].map((bin) => ({
+    ...bin,
+    city: titleCase([...bin.cities.entries()].sort((a, b) => b[1] - a[1])[0][0])
+  }));
+}
+
+function renderStretches(incidents) {
+  const list = document.getElementById("stretch-list");
+  const sort = state.stretchSort || "count";
+  const stretches = computeStretches(incidents)
+    .sort((a, b) => (sort === "deaths" ? b.deaths - a.deaths || b.count - a.count : b.count - a.count || b.deaths - a.deaths))
+    .slice(0, 8);
+  if (!stretches.length) {
+    list.innerHTML = `<li>${emptyBlock()}</li>`;
+    return;
+  }
+  list.innerHTML = stretches.map((spot, index) => `<li>
+    <button type="button" class="rank-item" data-index="${index}" title="Ver este trecho no mapa">
+      <em>${index + 1}</em>
+      ${shieldHtml(spot.road)}
+      <span class="rank-main"><strong>km ${spot.start}–${spot.start + 10}</strong><small>${escapeHtml(spot.city)}</small></span>
+      <span class="rank-value"><b>${formatInteger(sort === "deaths" ? spot.deaths : spot.count)} ${sort === "deaths" ? (spot.deaths === 1 ? "morte" : "mortes") : "ocorr."}</b>
+      <small>${sort === "deaths" ? `${formatInteger(spot.count)} ocorr.` : spot.deaths ? `${formatInteger(spot.deaths)} ${spot.deaths === 1 ? "morte" : "mortes"}` : ""}</small></span>
+    </button>
+  </li>`).join("");
+  list.querySelectorAll("[data-index]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const spot = stretches[Number(button.dataset.index)];
+      if (selectedRoad() !== spot.road) selectRoad(spot.road, { fit: false });
+      showOnMap(bboxOf(spot.points), 0.4);
+    });
+  });
+}
+
+function renderCities(incidents) {
+  const list = document.getElementById("city-list");
+  const groups = new Map();
+  incidents.forEach((incident) => {
+    const group = groups.get(incident.city) || { city: incident.city, count: 0, deaths: 0, points: [], roads: new Map() };
+    group.count += 1;
+    group.deaths += incident.deaths;
+    group.points.push([incident.x, incident.y]);
+    group.roads.set(incident.road, (group.roads.get(incident.road) || 0) + 1);
+    groups.set(incident.city, group);
+  });
+  const cities = [...groups.values()].sort((a, b) => b.count - a.count).slice(0, 8);
+  if (!cities.length) {
+    list.innerHTML = `<li>${emptyBlock()}</li>`;
+    return;
+  }
+  list.innerHTML = cities.map((group, index) => {
+    const roads = [...group.roads.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([road]) => road).join(", ");
+    return `<li>
+      <button type="button" class="rank-item" data-index="${index}" title="Ver este município no mapa">
+        <em>${index + 1}</em>
+        <span class="rank-city-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z"/><circle cx="12" cy="10" r="2.3"/></svg></span>
+        <span class="rank-main"><strong>${escapeHtml(titleCase(group.city))}</strong><small>${escapeHtml(roads)}</small></span>
+        <span class="rank-value"><b>${formatInteger(group.count)} ocorr.</b><small>${group.deaths ? `${formatInteger(group.deaths)} ${group.deaths === 1 ? "morte" : "mortes"}` : ""}</small></span>
+      </button>
+    </li>`;
+  }).join("");
+  list.querySelectorAll("[data-index]").forEach((button) => {
+    button.addEventListener("click", () => showOnMap(coreBox(cities[Number(button.dataset.index)].points), 0.25));
+  });
+}
+
+/* Bounding box of the points near the median, so one mis-geocoded record does not zoom out to the whole state. */
+function coreBox(points) {
+  const median = (values) => values.slice().sort((a, b) => a - b)[Math.floor(values.length / 2)];
+  const cx = median(points.map(([x]) => x));
+  const cy = median(points.map(([, y]) => y));
+  const near = points.filter(([x, y]) => Math.abs(x - cx) < 0.35 && Math.abs(y - cy) < 0.35);
+  return bboxOf(near.length ? near : points);
+}
+
+function showOnMap(box, padding) {
+  document.getElementById("map-canvas").scrollIntoView({ behavior: "smooth", block: "center" });
+  fitToBox(box, true, padding, { minSize: 0.03 });
+}
+
+function statBars(container, rows, { onClick, isActive } = {}) {
+  if (!rows.length) {
+    container.innerHTML = emptyBlock();
+    return;
+  }
+  const maximum = Math.max(...rows.map((row) => row.value)) || 1;
+  container.innerHTML = rows.map((row, index) => {
+    const tag = onClick ? "button" : "div";
+    const active = isActive && isActive(row);
+    return `<${tag} ${onClick ? `type="button" aria-pressed="${active}"` : ""} class="stat-bar${active ? " is-active" : ""}" data-index="${index}">
+      <span class="stat-bar-top"><span title="${escapeHtml(row.label)}">${escapeHtml(row.label)}</span><b>${row.valueLabel} <small>${row.note || ""}</small></b></span>
+      <span class="stat-track"><i class="${row.danger ? "danger" : ""}" style="width:${Math.max(2, row.value / maximum * 100)}%"></i></span>
+    </${tag}>`;
+  }).join("");
+  if (onClick) {
+    container.querySelectorAll("[data-index]").forEach((button) => {
+      button.addEventListener("click", () => onClick(rows[Number(button.dataset.index)]));
+    });
+  }
+}
+
+function renderWeatherStats(incidents) {
+  const groups = groupStats(incidents, (incident) => incident.weather);
+  statBars(document.getElementById("weather-stats"), groups.slice(0, 8).map((group) => ({
+    key: group.key,
+    label: weatherLabel(group.key),
+    value: group.count,
+    valueLabel: formatInteger(group.count),
+    note: `· ${formatDecimal(group.deaths / group.count * 100)} mortes/100`
+  })));
+}
+
+function renderHeatmap(incidents) {
+  const container = document.getElementById("week-heatmap");
+  if (!incidents.length) {
+    container.innerHTML = emptyBlock();
+    return;
+  }
+  const periods = PERIODS.map(([key]) => key);
+  const grid = Array.from({ length: 7 }, () => new Array(periods.length).fill(0));
+  incidents.forEach((incident) => {
+    const column = periods.indexOf(getTimePeriod(incident.time));
+    if (incident.weekday >= 0 && column >= 0) grid[incident.weekday][column] += 1;
+  });
+  const maximum = Math.max(1, ...grid.flat());
+  const order = [1, 2, 3, 4, 5, 6, 0];
+  let html = '<span></span>' + periods.map((key) => `<span class="hm-col">${PERIOD_LABELS[key]}</span>`).join("");
+  order.forEach((day) => {
+    html += `<span class="hm-row">${WEEKDAYS_SHORT[day]}</span>`;
+    grid[day].forEach((value, column) => {
+      const strength = value / maximum;
+      const mix = Math.round(6 + strength * 94);
+      html += `<span class="hm-cell${mix > 55 ? " is-strong" : ""}" style="background:color-mix(in srgb, var(--accent) ${mix}%, var(--surface))"
+        title="${WEEKDAYS_LONG[day]} · ${PERIOD_LABELS[periods[column]]}: ${formatInteger(value)} ocorrências">${formatInteger(value)}</span>`;
+    });
+  });
+  container.innerHTML = html;
+  let legend = container.nextElementSibling;
+  if (!legend || !legend.classList.contains("heatmap-legend")) {
+    legend = document.createElement("div");
+    legend.className = "heatmap-legend";
+    container.after(legend);
+  }
+  legend.innerHTML = `<span>menos</span><i aria-hidden="true"></i><span>mais</span>`;
+}
+
+function renderTypeStats(incidents) {
+  const groups = groupStats(incidents, (incident) => incident.type)
+    .filter((group) => group.count >= 20)
+    .map((group) => ({ ...group, rate: group.deaths / group.count * 100 }))
+    .sort((a, b) => b.rate - a.rate)
+    .slice(0, 6);
+  statBars(document.getElementById("type-stats"), groups.map((group) => ({
+    label: group.key,
+    value: group.rate,
+    valueLabel: formatDecimal(group.rate),
+    note: `· ${formatInteger(group.count)} ocorr.`,
+    danger: true
+  })));
+}
+
+function renderCauseStats(incidents) {
+  const groups = groupStats(incidents, (incident) => incident.cause).slice(0, 6);
+  statBars(document.getElementById("cause-stats"), groups.map((group) => ({
+    label: group.key,
+    value: group.count,
+    valueLabel: formatInteger(group.count),
+    note: `· ${formatPercent(group.count / incidents.length)}${group.deaths ? ` · ${formatInteger(group.deaths)} mortes` : ""}`
+  })));
+}
+
+function groupStats(incidents, pick) {
+  const groups = new Map();
+  incidents.forEach((incident) => {
+    const key = pick(incident);
+    if (!key) return;
+    const group = groups.get(key) || { key, count: 0, deaths: 0 };
+    group.count += 1;
+    group.deaths += incident.deaths;
+    groups.set(key, group);
+  });
+  return [...groups.values()].sort((a, b) => b.count - a.count);
+}
+
+function countBy(incidents, pick, size) {
+  const counts = new Array(size).fill(0);
+  incidents.forEach((incident) => {
+    const index = pick(incident);
+    if (index >= 0 && index < size) counts[index] += 1;
+  });
+  return counts;
+}
+
+function argMax(values) {
+  return values.reduce((best, value, index) => (value > values[best] ? index : best), 0);
+}
+
+function updateYearPicker() {
+  elements["year-picker"].querySelectorAll("[data-year]").forEach((button) => {
+    const active = Number(button.dataset.year) === state.year;
+    button.setAttribute("aria-checked", String(active));
+    button.tabIndex = active ? 0 : -1;
+    if (active) {
+      // Keep the chosen year visible when the picker scrolls sideways (phones).
+      const picker = elements["year-picker"];
+      const left = button.offsetLeft - picker.offsetLeft;
+      if (left < picker.scrollLeft || left + button.offsetWidth > picker.scrollLeft + picker.clientWidth) {
+        picker.scrollLeft = left - (picker.clientWidth - button.offsetWidth) / 2;
+      }
     }
   });
 }
 
-async function loadStaticPrfSnapshot() {
-  const response = await fetch("./data/prf-2026.json");
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const snapshot = await response.json();
-  const incidents = normalizePrfSnapshot(snapshot);
+async function selectYear(year, { updateHash = true } = {}) {
+  if (year === state.year && state.prfIncidents.length) return;
+  const token = (state.yearToken || 0) + 1;
+  state.yearToken = token;
+  state.year = year;
+  updateYearPicker();
+  updateYearTexts();
+  if (!state.statsPeriod || state.statsPeriod.mode === "map") renderStatsPeriodChips();
+  if (updateHash) {
+    try { history.replaceState(null, "", `#ano=${year}`); } catch (error) { /* file:// or sandbox */ }
+  }
+  elements["map-loading"].textContent = `Carregando ${year}…`;
+  elements["map-loading"].hidden = false;
+  elements["year-picker"].setAttribute("aria-busy", "true");
+
+  const [prf, sejusp] = await Promise.allSettled([loadYearFile("prf", year), loadYearFile("sejusp", year)]);
+  if (token !== state.yearToken) return; // another year was chosen meanwhile
+  elements["year-picker"].removeAttribute("aria-busy");
+  if (state.boundary) elements["map-loading"].hidden = true;
+
+  if (prf.status === "fulfilled") {
+    applyPrfSnapshot(prf.value);
+  } else {
+    console.error(`Não foi possível carregar a base da PRF de ${year}.`, prf.reason);
+    state.prfIncidents = [];
+    elements["map-empty"].hidden = false;
+    elements["map-empty"].querySelector("strong").textContent = `Base da PRF de ${year} indisponível`;
+    elements["map-empty"].querySelector("span").textContent = "Não foi possível carregar os dados de acidentes incluídos neste deploy.";
+    elements["map-status"].textContent = `Não foi possível carregar a base da PRF de ${year}.`;
+    elements["map-status"].hidden = false;
+    applyFilters();
+    notify(`Não foi possível carregar a base da PRF de ${year}.`, "error");
+  }
+  if (sejusp.status === "fulfilled") {
+    applySejuspSnapshot(sejusp.value, year);
+  } else {
+    console.error(`Não foi possível carregar a base da SEJUSP de ${year}.`, sejusp.reason);
+    state.stateVictims = [];
+    elements["state-victims"].textContent = "—";
+    elements["state-data-through"].textContent = `Não foi possível carregar a base estadual de ${year}.`;
+    elements["municipality-list"].innerHTML = '<p class="empty-inline">Resumo estadual indisponível.</p>';
+  }
+}
+
+const yearFileCache = new Map();
+function loadYearFile(kind, year) {
+  const key = `${kind}-${year}`;
+  if (!yearFileCache.has(key)) {
+    const request = fetch(`./data/${key}.json`).then((response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    });
+    request.catch(() => yearFileCache.delete(key));
+    yearFileCache.set(key, request);
+  }
+  return yearFileCache.get(key);
+}
+
+function updateYearTexts() {
+  const year = state.year;
+  const info = yearInfo(year);
+  elements["state-summary-label"].textContent = `registros de vítimas · base ${year}`;
+  elements["year-note"].textContent = isPartialYear(info)
+    ? `${year} ainda em andamento: dados da PRF até ${formatDate(info.prfThrough)}.`
+    : `Ano completo · dados oficiais da PRF e da SEJUSP.`;
+}
+
+function applyPrfSnapshot(snapshot) {
+  const incidents = normalizePrfSnapshot(snapshot, state.year);
   state.prfIncidents = incidents;
   state.selectedIncident = null;
+  state.stack = null;
   state.roadTotals = new Map();
   incidents.forEach((incident) => {
     const total = state.roadTotals.get(incident.road) || { count: 0, deaths: 0 };
@@ -238,25 +1055,27 @@ async function loadStaticPrfSnapshot() {
     total.deaths += incident.deaths;
     state.roadTotals.set(incident.road, total);
   });
-  elements["map-status"].textContent = `${formatInteger(incidents.length)} ocorrências da PRF · dados até ${formatDate(snapshot.dataThrough)} · incluídos neste deploy.`;
+  elements["map-status"].hidden = true;
   elements["map-empty"].hidden = true;
   populateFilters();
   applyFilters();
   renderRoads();
 }
 
-async function loadStaticSejuspSnapshot() {
-  const response = await fetch("./data/sejusp-2026.json");
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const snapshot = await response.json();
+function applySejuspSnapshot(snapshot, year) {
   state.stateVictims = normalizeSejuspSnapshot(snapshot);
   renderStateSummary();
   const month = Number(snapshot.dataThrough);
   const monthName = Number.isInteger(month) && month >= 1 && month <= 12
-    ? new Intl.DateTimeFormat("pt-BR", { month: "long" }).format(new Date(2026, month - 1, 1))
+    ? new Intl.DateTimeFormat("pt-BR", { month: "long" }).format(new Date(year, month - 1, 1))
     : "período não informado";
-  elements["state-data-through"].textContent = `Base estadual disponível até ${monthName} de 2026.`;
-  updateSourceCount();
+  elements["state-data-through"].textContent = `Base estadual de ${year} disponível até ${monthName}.`;
+}
+
+function shortMonth(isoDate) {
+  const match = /^(\d{4})-(\d{2})/.exec(isoDate || "");
+  if (!match) return "";
+  return new Intl.DateTimeFormat("pt-BR", { month: "short" }).format(new Date(Number(match[1]), Number(match[2]) - 1, 1)).replace(".", "");
 }
 
 /* ---------- Map geometry ---------- */
@@ -358,12 +1177,12 @@ function geometryToPath(geometry) {
 
 /* ---------- Snapshots ---------- */
 
-function normalizePrfSnapshot(snapshot) {
+function normalizePrfSnapshot(snapshot, year) {
   if (!snapshot || !Array.isArray(snapshot.incidents) || !snapshot.incidents.length) {
     throw new Error("A cópia estática da PRF está vazia ou em formato inválido.");
   }
   return snapshot.incidents.filter((incident) => (
-    incident && typeof incident.date === "string" && incident.date.startsWith("2026")
+    incident && typeof incident.date === "string" && incident.date.startsWith(String(year))
     && Number.isFinite(incident.latitude) && Number.isFinite(incident.longitude)
     && withinMinas(incident.latitude, incident.longitude)
   )).map((incident) => {
@@ -373,6 +1192,7 @@ function normalizePrfSnapshot(snapshot) {
       x,
       y,
       kmValue: parseFloat(String(incident.km || "").replace(",", ".")),
+      ...dateParts(incident.date, incident.time),
       deaths: nonNegative(incident.deaths),
       minorInjuries: nonNegative(incident.minorInjuries),
       severeInjuries: nonNegative(incident.severeInjuries),
@@ -400,6 +1220,8 @@ function populateFilters() {
   fillSelect(elements["type-filter"], types, "Todos os tipos");
   fillSelect(elements["cause-filter"], causes, "Todas as causas");
   const weatherCounts = topCounts(state.prfIncidents, (incident) => incident.weather, 50);
+  const available = new Set(weatherCounts.map(([weather]) => weather));
+  [...state.chips.weather].forEach((weather) => { if (!available.has(weather)) state.chips.weather.delete(weather); });
   elements["weather-chips"].innerHTML = weatherCounts.map(([weather, count]) => `
     <button type="button" class="chip" data-value="${escapeHtml(weather)}" aria-pressed="${state.chips.weather.has(weather)}" title="${formatInteger(count)} ocorrências">
       ${escapeHtml(weatherLabel(weather))} <small class="chip-count">${formatInteger(count)}</small>
@@ -429,17 +1251,21 @@ function applyFilters() {
   const cause = elements["cause-filter"].value;
   const { severity, period, weather } = state.chips;
 
-  state.filteredExceptRoad = state.prfIncidents.filter((incident) => {
+  // Everything except weather and road; the weather card needs the breakdown before its own filter.
+  const baseMatches = (incident) => {
     if (type && incident.type !== type) return false;
     if (cause && incident.cause !== cause) return false;
     if (period.size && !period.has(getTimePeriod(incident.time))) return false;
-    if (weather.size && !weather.has(incident.weather)) return false;
     if (severity.size && !severity.has(severityKey(incident))) return false;
     if (query && ![
       incident.road, incident.city, incident.cause, incident.type, incident.km
     ].some((value) => String(value).toLocaleLowerCase("pt-BR").includes(query))) return false;
     return true;
-  });
+  };
+  const base = state.prfIncidents.filter(baseMatches);
+  state.weatherBase = base.filter((incident) => !road || incident.road === road);
+  state.filterSpec = { baseMatches, road, weather };
+  state.filteredExceptRoad = weather.size ? base.filter((incident) => weather.has(incident.weather)) : base;
   state.filteredIncidents = state.filteredExceptRoad
     .filter((incident) => !road || incident.road === road)
     .sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`));
@@ -461,8 +1287,8 @@ function applyFilters() {
   renderIncidentList();
   renderIncidentDetail();
   renderStateSummary();
-  updateSourceCount();
   updateRoadClasses();
+  renderInsights();
   drawNow();
 }
 
@@ -491,6 +1317,28 @@ function updateSectionBadges(counts) {
     badge.hidden = count === 0;
     badge.textContent = String(count);
   });
+}
+
+/* ---------- Header navigation ---------- */
+
+function bindTopNav() {
+  const links = [...document.querySelectorAll(".top-nav [data-section]")];
+  const sections = links.map((link) => document.getElementById(link.dataset.section)).filter(Boolean);
+  if (!sections.length) return;
+  const update = () => {
+    // The current section is the last one whose top has passed the upper third of the screen.
+    const line = window.innerHeight / 3;
+    let current = sections[0].id;
+    sections.forEach((section) => { if (section.getBoundingClientRect().top <= line) current = section.id; });
+    links.forEach((link) => link.setAttribute("aria-current", String(link.dataset.section === current)));
+  };
+  let frame = 0;
+  window.addEventListener("scroll", () => {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(update);
+  }, { passive: true });
+  window.addEventListener("resize", update);
+  update();
 }
 
 /* ---------- Sidebar tabs ---------- */
@@ -525,10 +1373,9 @@ function renderMetrics() {
   const deaths = sumOf(incidents, (incident) => incident.deaths);
   const injuries = sumOf(incidents, injuriesOf);
   elements["metric-occurrences"].textContent = formatInteger(incidents.length);
-  elements["metric-occurrences-note"].textContent = road ? `registros da PRF na ${road}` : "registros da PRF em MG";
+  elements["metric-occurrences-note"].textContent = road ? `registros da PRF na ${road} em ${state.year}` : `registros da PRF em MG em ${state.year}`;
   elements["metric-fatalities"].textContent = formatInteger(deaths);
   elements["metric-injured"].textContent = formatInteger(injuries);
-  elements["map-count"].textContent = `${formatInteger(incidents.length)} ${incidents.length === 1 ? "ocorrência" : "ocorrências"}`;
   elements["map-title"].textContent = road || "Minas Gerais";
   elements["map-caption"].textContent = road
     ? "Rodovia selecionada · clique em outra BR ou pressione Esc para voltar"
@@ -582,12 +1429,7 @@ function renderRoadPanel() {
   if (!incidents.length) {
     body = '<p class="empty-inline">Nenhuma ocorrência desta BR corresponde aos filtros atuais.</p>';
   } else {
-    const causes = topCounts(incidents, (incident) => incident.cause, 5);
-    const types = topCounts(incidents, (incident) => incident.type, 4);
-    const cities = topCounts(incidents, (incident) => titleCase(incident.city), 5);
-    const periods = PERIODS.map(([key, label]) => [label, incidents.filter((incident) => getTimePeriod(incident.time) === key).length]);
-    const maxPeriod = Math.max(1, ...periods.map(([, count]) => count));
-    const hotspots = computeHotspots(incidents);
+    const hotspots = computeStretches(incidents).sort((a, b) => b.count - a.count || b.deaths - a.deaths).slice(0, 5);
     body = `
       <div class="road-stats">
         <div class="road-stat"><span>Ocorrências</span><strong>${formatInteger(incidents.length)}</strong></div>
@@ -605,22 +1447,14 @@ function renderRoadPanel() {
           </button>`).join("")}
         </div>
       </section>` : ""}
-      <section class="road-section"><h4>Principais causas</h4>${barList(causes, incidents.length)}</section>
-      <section class="road-section"><h4>Tipos de acidente</h4>${barList(types, incidents.length)}</section>
-      <section class="road-section">
-        <h4>Horário das ocorrências</h4>
-        <div class="period-chart">${periods.map(([label, count]) => `
-          <div class="period-col"><div class="col-wrap"><i style="height:${Math.max(3, count / maxPeriod * 100)}%"></i></div><b>${formatInteger(count)}</b><span>${label}</span></div>`).join("")}
-        </div>
-      </section>
-      <section class="road-section"><h4>Municípios com mais registros</h4>${barList(cities, incidents.length)}</section>`;
+      <a class="road-more" href="#estatisticas">Causas, horários, clima e municípios da ${escapeHtml(road)} nas estatísticas ↓</a>`;
     state.hotspots = hotspots;
   }
 
   panel.innerHTML = `
     <div class="road-panel-head">
       ${shieldHtml(road, true)}
-      <div><strong>${escapeHtml(road)}</strong><span>${hasGeometry ? "Rodovia federal · trecho em Minas Gerais" : "Traçado indisponível no mapa"} · PRF 2026</span></div>
+      <div><strong>${escapeHtml(road)}</strong><span>${hasGeometry ? "Rodovia federal · trecho em Minas Gerais" : "Traçado indisponível no mapa"} · PRF ${state.year}</span></div>
       <button class="icon-button" type="button" id="road-panel-close" aria-label="Fechar e ver todas as BRs">×</button>
     </div>
     <div class="road-panel-body">${body}</div>`;
@@ -632,37 +1466,6 @@ function renderRoadPanel() {
       if (spot) fitToBox(bboxOf(spot.points), true, 0.0);
     });
   });
-}
-
-function computeHotspots(incidents) {
-  const bins = new Map();
-  incidents.forEach((incident) => {
-    if (!Number.isFinite(incident.kmValue)) return;
-    const start = Math.floor(incident.kmValue / 10) * 10;
-    const bin = bins.get(start) || { start, count: 0, deaths: 0, cities: new Map(), points: [] };
-    bin.count += 1;
-    bin.deaths += incident.deaths;
-    bin.cities.set(incident.city, (bin.cities.get(incident.city) || 0) + 1);
-    bin.points.push([incident.x, incident.y]);
-    bins.set(start, bin);
-  });
-  return [...bins.values()]
-    .sort((a, b) => b.count - a.count || b.deaths - a.deaths)
-    .slice(0, 5)
-    .map((bin) => ({
-      ...bin,
-      city: titleCase([...bin.cities.entries()].sort((a, b) => b[1] - a[1])[0][0])
-    }));
-}
-
-function barList(entries, total) {
-  if (!entries.length) return '<p class="empty-inline">Sem dados.</p>';
-  const maximum = entries[0][1] || 1;
-  return `<div class="bar-list">${entries.map(([label, count]) => `
-    <div class="bar-row">
-      <div class="bar-row-top"><span title="${escapeHtml(label)}">${escapeHtml(label)}</span><b>${formatInteger(count)} <small style="color:var(--muted);font-weight:500">· ${formatPercent(count / total)}</small></b></div>
-      <div class="bar-track"><i style="width:${Math.max(3, count / maximum * 100)}%"></i></div>
-    </div>`).join("")}</div>`;
 }
 
 function renderStateSummary() {
@@ -1345,7 +2148,7 @@ function setHoverRoad(road, position, keepTooltip = false) {
     const totals = state.roadTotals.get(road) || { count: 0, deaths: 0 };
     const isSelected = road === selectedRoad();
     tooltip.classList.remove("map-tooltip-incident");
-    tooltip.innerHTML = `${shieldHtml(road)}<div><strong>${escapeHtml(road)}</strong><span>${formatInteger(totals.count)} ocorrências · ${formatInteger(totals.deaths)} mortes em 2026</span><span>${isSelected ? "Rodovia selecionada" : "Clique para ver os dados desta BR"}</span></div>`;
+    tooltip.innerHTML = `${shieldHtml(road)}<div><strong>${escapeHtml(road)}</strong><span>${formatInteger(totals.count)} ocorrências · ${formatInteger(totals.deaths)} mortes em ${state.year}</span><span>${isSelected ? "Rodovia selecionada" : "Clique para ver os dados desta BR"}</span></div>`;
     placeTooltip(position);
   } else if (!keepTooltip) {
     tooltip.hidden = true;
@@ -1676,11 +2479,6 @@ function topCounts(items, pick, limit) {
 function shieldHtml(road, large = false) {
   const number = String(road).replace(/^BR-/, "");
   return `<span class="br-shield${large ? " lg" : ""}" aria-hidden="true"><small>BR</small><b>${escapeHtml(number)}</b></span>`;
-}
-
-function updateSourceCount() {
-  const count = Number(state.prfIncidents.length > 0) + Number(state.stateVictims.length > 0);
-  elements["source-count"].textContent = String(count);
 }
 
 function titleCase(value) {

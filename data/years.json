@@ -1,0 +1,40 @@
+{
+  "latest": 2026,
+  "years": [
+    {
+      "year": 2026,
+      "incidents": 7132,
+      "deaths": 603,
+      "prfThrough": "2026-09-30",
+      "sejuspThrough": "07"
+    },
+    {
+      "year": 2025,
+      "incidents": 9570,
+      "deaths": 765,
+      "prfThrough": "2025-12-31",
+      "sejuspThrough": "12"
+    },
+    {
+      "year": 2024,
+      "incidents": 9306,
+      "deaths": 794,
+      "prfThrough": "2024-12-31",
+      "sejuspThrough": "12"
+    },
+    {
+      "year": 2023,
+      "incidents": 9007,
+      "deaths": 726,
+      "prfThrough": "2023-12-31",
+      "sejuspThrough": "12"
+    },
+    {
+      "year": 2022,
+      "incidents": 8295,
+      "deaths": 701,
+      "prfThrough": "2022-12-31",
+      "sejuspThrough": "12"
+    }
+  ]
+}
