@@ -800,6 +800,7 @@ button.stat-bar:hover { background: var(--surface-2); }
   .insight-card { padding: 14px; }
   .insight-head { flex-direction: column; }
   .month-chart .col-bar b { display: none; }
+  .month-chart .col-bar { grid-template-rows: 1fr; }
   .trend-chart, .month-chart { height: 130px; }
   .heatmap { grid-template-columns: 54px repeat(4, minmax(0, 1fr)); }
 }
@@ -829,6 +830,7 @@ button.stat-bar:hover { background: var(--surface-2); }
 }
 .period-dates input:hover { border-color: var(--accent); }
 .month-chart.is-dense .col-bar b { display: none; }
+.month-chart.is-dense .col-bar { grid-template-rows: 1fr; }
 .month-chart.is-dense + .col-axis span { font-size: 10px; }
 @media (max-width: 1100px) {
   .stats-period { grid-template-columns: 1fr; }

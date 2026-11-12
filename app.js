@@ -140,7 +140,7 @@ function bindEvents() {
   elements["markers"].addEventListener("pointerdown", onMapPointerDown);
   elements["markers"].addEventListener("pointermove", onMapPointerMove);
   elements["markers"].addEventListener("pointerup", onMapPointerUp);
-  elements["markers"].addEventListener("pointercancel", endMapDrag);
+  elements["markers"].addEventListener("pointercancel", onMapPointerCancel);
   elements["markers"].addEventListener("pointerleave", () => { if (!state.drag) clearHover(); });
   elements["markers"].addEventListener("wheel", onMapWheel, { passive: false });
   elements["theme-toggle"].addEventListener("click", () => {
@@ -2164,15 +2164,80 @@ function setHoverRoad(road, position, keepTooltip = false) {
 
 /* ---------- Pan & zoom ---------- */
 
+/*
+ * Pointers currently on the map. One pointer pans (and taps select); two pointers pinch:
+ * the map zooms around the point between the fingers and follows it as they move.
+ */
+const activePointers = new Map();
+
 function onMapPointerDown(event) {
   if (!state.viewBox) return;
   stopAnimation();
-  event.currentTarget.setPointerCapture(event.pointerId);
+  try { event.currentTarget.setPointerCapture(event.pointerId); } catch (error) { /* pointer already gone */ }
+  activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (activePointers.size === 2) {
+    startPinch();
+    return;
+  }
+  if (activePointers.size > 2) return;
   state.drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, moved: false, initial: { ...state.viewBox } };
 }
 
+function startPinch() {
+  const [a, b] = [...activePointers.values()];
+  const rect = elements["markers"].getBoundingClientRect();
+  const initial = { ...state.viewBox };
+  const scale = Math.min(rect.width / initial.width, rect.height / initial.height);
+  const offsetX = (rect.width - initial.width * scale) / 2;
+  const offsetY = (rect.height - initial.height * scale) / 2;
+  const midX = (a.x + b.x) / 2 - rect.left;
+  const midY = (a.y + b.y) / 2 - rect.top;
+  state.pinch = {
+    distance: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+    initial,
+    scale,
+    offsetX,
+    offsetY,
+    // Map point under the fingers when the pinch started; it stays under them.
+    anchorX: initial.x + (midX - offsetX) / scale,
+    anchorY: initial.y + (midY - offsetY) / scale
+  };
+  state.drag = null;
+  state.gesture = true;
+  elements["markers"].classList.add("is-dragging");
+  clearHover();
+}
+
+function updatePinch() {
+  const pinch = state.pinch;
+  const [a, b] = [...activePointers.values()];
+  const rect = elements["markers"].getBoundingClientRect();
+  const factor = Math.hypot(a.x - b.x, a.y - b.y) / pinch.distance;
+  const width = clamp(pinch.initial.width / factor, state.baseViewBox.width / MAX_ZOOM, state.baseViewBox.width * 1.1);
+  const ratio = width / pinch.initial.width;
+  const scale = pinch.scale / ratio;
+  const midX = (a.x + b.x) / 2 - rect.left;
+  const midY = (a.y + b.y) / 2 - rect.top;
+  state.viewBox = {
+    x: pinch.anchorX - (midX - pinch.offsetX) / scale,
+    y: pinch.anchorY - (midY - pinch.offsetY) / scale,
+    width,
+    height: pinch.initial.height * ratio
+  };
+  applyViewBox();
+  drawNow();
+}
+
 function onMapPointerMove(event) {
+  if (activePointers.has(event.pointerId)) {
+    activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  }
+  if (state.pinch) {
+    if (activePointers.size >= 2) updatePinch();
+    return;
+  }
   if (!state.drag) {
+    if (event.pointerType === "touch") return;
     const [sx, sy] = screenPoint(event);
     updateHover(sx, sy);
     return;
@@ -2195,11 +2260,41 @@ function onMapPointerMove(event) {
   drawNow();
 }
 
+/* After a pinch, the finger that stays down keeps panning from where it is, without a jump. */
+function finishPointer(event) {
+  activePointers.delete(event.pointerId);
+  if (!state.pinch) return false;
+  if (activePointers.size >= 2) {
+    startPinch();
+    return true;
+  }
+  state.pinch = null;
+  if (activePointers.size === 1) {
+    const [pointerId, point] = [...activePointers.entries()][0];
+    state.drag = { pointerId, startX: point.x, startY: point.y, moved: true, initial: { ...state.viewBox } };
+  } else {
+    endMapDrag();
+  }
+  return true;
+}
+
+function onMapPointerCancel(event) {
+  finishPointer(event);
+  if (!activePointers.size) {
+    state.gesture = false;
+    endMapDrag();
+  }
+}
+
 function onMapPointerUp(event) {
+  if (finishPointer(event)) return;
   if (!state.drag || state.drag.pointerId !== event.pointerId) return;
   const moved = state.drag.moved;
+  // A finger lifted after a pinch is never a tap.
+  const afterGesture = state.gesture;
+  if (!activePointers.size) state.gesture = false;
   endMapDrag();
-  if (moved) return;
+  if (moved || afterGesture) return;
   const [sx, sy] = screenPoint(event);
   const hit = resolveHit(sx, sy);
   if (!hit) return;
